@@ -19,6 +19,12 @@ const ITEM_DEBOUNCE = new Map();
 // Utilities
 // -------------------------------
 
+function escapeHTML(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 function clipName(name) {
   const chars = Array.from(String(name ?? ""));
   if (chars.length <= MAX_NAME_CHARS) return chars.join("");
@@ -124,7 +130,9 @@ function willUpdatePath(update, path) {
 function buildRecipients(actor) {
   const mode = game.settings.get(MOD_ID, "npcAudience") ?? "gm-owners";
   const gmUsers = game.users.filter(u => u.isGM);
-  const owners = game.users.filter(u => actor.testUserPermission?.(u, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER));
+  const owners = actor.testUserPermission
+    ? game.users.filter(u => actor.testUserPermission(u, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))
+    : [];
 
   const uniq = (...lists) => [...new Map(lists.flat().map(u => [u.id, u])).values()];
 
@@ -132,7 +140,10 @@ function buildRecipients(actor) {
     if (mode === "gm") return gmUsers.map(u => u.id);
     if (mode === "gm-players") return uniq(gmUsers, game.users.filter(u => !u.isGM)).map(u => u.id);
   }
-  return uniq(gmUsers, owners).map(u => u.id);
+
+  // Fallback to GM-only if no owners could be determined
+  const recipients = uniq(gmUsers, owners).map(u => u.id);
+  return recipients.length > 0 ? recipients : gmUsers.map(u => u.id);
 }
 
 function coinLabel(denom, systemId) {
@@ -223,6 +234,12 @@ Hooks.once("init", () => {
     scope: "world", config: true, type: Boolean, default: true
   });
 
+  game.settings.register(MOD_ID, "trackDeletedMessages", {
+    name: "Track Deleted Chat Messages",
+    hint: "If enabled, when a player deletes a chat message, a copy of it is whispered to the GM(s).",
+    scope: "world", config: true, type: Boolean, default: true
+  });
+
   // -------------------------------------------------------------------
   // 2. DnD5e Specific Settings
   // -------------------------------------------------------------------
@@ -309,7 +326,7 @@ Hooks.on("preUpdateActor", (actor, update, options, userId) => {
   const willInsp = inspPath ? willUpdatePath(update, inspPath) : false;
 
   let currencyPayload = null;
-  if (getWorldBool("trackCurrency") && (sys === "dnd5e" || sys === "pf2e")) {
+  if (getWorldBool("trackCurrency", true)) {
     const { basePath, coins } = detectCurrencyInfo(actor);
     if (basePath && coins.length && (willUpdatePath(update, basePath) || coins.some(k => willUpdatePath(update, `${basePath}.${k}`)))) {
       currencyPayload = { basePath, coins };
@@ -327,7 +344,7 @@ Hooks.on("preUpdateActor", (actor, update, options, userId) => {
   let spellSlotsPayload = null;
   if (sys === "dnd5e" && getWorldBool("trackDnd5eSpellSlots", true)) {
     const slotPaths = getDnd5eSpellSlotPaths();
-    const changedSlots = slotPaths.filter(s => willUpdatePath(update, s.path));
+    const changedSlots = slotPaths.filter(s => willUpdatePath(update, s.path) && foundry.utils.hasProperty(actor, s.path));
     if (changedSlots.length > 0) {
       spellSlotsPayload = changedSlots.map(s => ({ level: s.level, path: s.path, oldValue: readNumber(actor, s.path) }));
     }
@@ -582,7 +599,7 @@ Hooks.on("createItem", async (item, options, userId) => {
 
   const qty = readNumber(item, "system.quantity") || 1;
   const link = getActorLink(item.parent);
-  const safeItemName = item.name;
+  const safeItemName = escapeHTML(item.name);
   const icon = `<i class="fa-solid fa-backpack"></i>`;
 
   const isSimple = getWorldBool("simpleOutput");
@@ -616,7 +633,7 @@ Hooks.on("updateItem", (item, change, options, userId) => {
   if (userId !== game.userId || !(item.parent instanceof Actor)) return;
 
   // Spell Prep
-  if (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep", true) && item.type === "spell") {
+  if (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") {
     if (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode")) {
       const prepared = computePreparedAfter(item, change);
       const level = readNumber(item, "system.level");
@@ -661,7 +678,7 @@ async function processItemUpdate(item, data) {
     const newQty = readNumber(item, "system.quantity") || 0;
 
     if (newQty !== oldQty) {
-      const safeItemName = item.name;
+      const safeItemName = escapeHTML(item.name);
 
       const delta = newQty - oldQty;
       const sign = delta > 0 ? "+" : "-";
@@ -738,12 +755,67 @@ Hooks.on("deleteItem", async (item, options, userId) => {
   });
 });
 
-Hooks.on("renderChatMessage", (message, html) => {
+function applyMonitorStyling(message, html) {
   if (!message.getFlag(MOD_ID, "isMonitorMsg")) return;
-  const li = html[0]?.closest?.(".chat-message") ?? html?.closest?.(".chat-message") ?? html;
+  const li = html instanceof HTMLElement
+    ? html.closest(".chat-message") ?? html
+    : (html[0]?.closest?.(".chat-message") ?? html);
   if (!li?.classList) return;
 
   li.classList.add("tiny-monitor-msg");
   const cls = message.getFlag(MOD_ID, "cls");
   if (cls) li.classList.add(cls);
+}
+
+Hooks.on("renderChatMessage", applyMonitorStyling);      // V13 compat
+Hooks.on("renderChatMessageHTML", applyMonitorStyling);  // V14+
+
+// -------------------------------
+// Chat Message Deletions
+// -------------------------------
+
+Hooks.on("deleteChatMessage", async (message, options, userId) => {
+  // Only the active GM processes this. This prevents the triggering player
+  // from seeing the newly generated whisper, and prevents duplicate messages.
+  if (!game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
+
+  const deletingUser = game.users.get(userId);
+  // Don't report if a GM deleted a message
+  if (!deletingUser || deletingUser.isGM) return;
+
+  if (!getWorldBool("trackDeletedMessages", true)) return;
+
+  const gmUsers = game.users.filter(u => u.isGM).map(u => u.id);
+  if (gmUsers.length === 0) return;
+
+  const userName = escapeHTML(deletingUser.name || "Unknown Player");
+
+  // Clone the message data to preserve all rolls, flags, embeds, and styling perfectly
+  const messageData = message.toObject();
+  
+  // Wipe ID so it creates a new message
+  delete messageData._id;
+
+  // Change the author of the message to the GM. If we don't do this,
+  // Foundry's permission system ensures the author ALWAYS sees their own chat messages.
+  messageData.author = game.user.id;
+  messageData.user = game.user.id;
+  
+  // Update targets to GM only
+  messageData.whisper = gmUsers;
+  
+  // Assign a special flag so our styling can still catch it if needed
+  foundry.utils.setProperty(messageData, `flags.${MOD_ID}.isMonitorMsg`, true);
+  foundry.utils.setProperty(messageData, `flags.${MOD_ID}.kind`, "chat-delete");
+  foundry.utils.setProperty(messageData, `flags.${MOD_ID}.cls`, "tiny-monitor-item-dec");
+
+  // Prepend the notice into the flavor or content
+  const prefix = `<div style="color: var(--color-text-dark-primary); margin-bottom: 0.5rem; font-size: 1.1em;"><strong>${userName} deleted:</strong></div>`;
+  if (messageData.flavor) {
+    messageData.flavor = prefix + messageData.flavor;
+  } else {
+    messageData.content = prefix + (messageData.content || "");
+  }
+
+  await ChatMessage.create(messageData);
 });
