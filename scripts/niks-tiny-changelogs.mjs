@@ -620,11 +620,15 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const trackItems = getWorldBool("trackItemChanges");
   const willQty = trackItems && willUpdatePath(change, "system.quantity");
   const willName = trackItems && willUpdatePath(change, "name");
+  
+  const willPrep = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") && 
+    (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode"));
 
-  if (willQty || willName) {
+  if (willQty || willName || willPrep) {
     ITEM_UPDATE_STASH.set(item, {
       oldQty: willQty ? (readNumber(item, "system.quantity") || 0) : undefined,
-      oldName: willName ? String(item.name ?? "") : undefined
+      oldName: willName ? String(item.name ?? "") : undefined,
+      oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined
     });
   }
 });
@@ -632,30 +636,19 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
 Hooks.on("updateItem", (item, change, options, userId) => {
   if (userId !== game.userId || !(item.parent instanceof Actor)) return;
 
-  // Spell Prep
-  if (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") {
-    if (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode")) {
-      const prepared = computePreparedAfter(item, change);
-      const level = readNumber(item, "system.level");
-      const link = getActorLink(item.parent);
-      const icon = `<i class="fa-solid fa-book"></i>`;
-      const line = `${icon} ${link} ${prepared ? "prepared" : "unprepared"}: ${item.name}${Number.isFinite(level) ? ` (Lv ${level})` : ""}`;
-      postMonitorMessage(item.parent, line, "tiny-monitor-spellprep", "spellprep", true);
-    }
-  }
-
-  // Debounce Quantity/Name changes
+  // Debounce Quantity/Name/Prep changes
   const stash = ITEM_UPDATE_STASH.get(item);
   ITEM_UPDATE_STASH.delete(item);
 
   if (stash) {
     const uuid = item.uuid;
-    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, timer: null };
+    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldPrep: undefined, timer: null };
 
     if (pending.timer) clearTimeout(pending.timer);
 
-    if (pending.oldQty === undefined) pending.oldQty = stash.oldQty;
-    if (pending.oldName === undefined) pending.oldName = stash.oldName;
+    if (pending.oldQty === undefined && stash.oldQty !== undefined) pending.oldQty = stash.oldQty;
+    if (pending.oldName === undefined && stash.oldName !== undefined) pending.oldName = stash.oldName;
+    if (pending.oldPrep === undefined && stash.oldPrep !== undefined) pending.oldPrep = stash.oldPrep;
 
     pending.timer = setTimeout(() => {
       processItemUpdate(item, pending);
@@ -709,6 +702,17 @@ async function processItemUpdate(item, data) {
   if (data.oldName !== undefined && item.name !== data.oldName) {
     const line = `${icon} ${link} Item: ${data.oldName} → ${item.name}`;
     await postMonitorMessage(item.parent, line, "tiny-monitor-item", "item", true);
+  }
+
+  // Spell Prep
+  if (data.oldPrep !== undefined) {
+    const newPrep = dnd5eIsSpellPreparedLike(item);
+    if (newPrep !== data.oldPrep) {
+      const level = readNumber(item, "system.level");
+      const prepIcon = `<i class="fa-solid fa-book"></i>`;
+      const line = `${prepIcon} ${link} ${newPrep ? "prepared" : "unprepared"}: ${item.name}${Number.isFinite(level) ? ` (Lv ${level})` : ""}`;
+      await postMonitorMessage(item.parent, line, "tiny-monitor-spellprep", "spellprep", true);
+    }
   }
 }
 
@@ -777,7 +781,9 @@ Hooks.on("renderChatMessageHTML", applyMonitorStyling);  // V14+
 Hooks.on("deleteChatMessage", async (message, options, userId) => {
   // Only the active GM processes this. This prevents the triggering player
   // from seeing the newly generated whisper, and prevents duplicate messages.
-  if (!game.user.isGM || game.users.activeGM?.id !== game.user.id) return;
+  // V14 renames activeGM → primaryGM; fall back for V13 compat
+  const primaryGM = game.users.primaryGM ?? game.users.activeGM;
+  if (!game.user.isGM || primaryGM?.id !== game.user.id) return;
 
   const deletingUser = game.users.get(userId);
   // Don't report if a GM deleted a message
@@ -798,6 +804,7 @@ Hooks.on("deleteChatMessage", async (message, options, userId) => {
 
   // Change the author of the message to the GM. If we don't do this,
   // Foundry's permission system ensures the author ALWAYS sees their own chat messages.
+  // V13 uses 'user', V14 uses 'author' — set both for cross-version compat
   messageData.author = game.user.id;
   messageData.user = game.user.id;
   
