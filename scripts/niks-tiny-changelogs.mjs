@@ -268,6 +268,12 @@ Hooks.once("init", () => {
     scope: "world", config: true, type: Boolean, default: true
   });
 
+  game.settings.register(MOD_ID, "trackDnd5eHitDice", {
+    name: "Track Hit Dice (DnD5e)",
+    hint: "If enabled, logs when DnD5e characters expend or regain Hit Dice.",
+    scope: "world", config: true, type: Boolean, default: true
+  });
+
   // -------------------------------------------------------------------
   // 3. Advanced / Manual Path Configuration
   // -------------------------------------------------------------------
@@ -624,11 +630,15 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const willPrep = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") && 
     (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode"));
 
-  if (willQty || willName || willPrep) {
+  const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice") && item.type === "class") &&
+    willUpdatePath(change, "system.hitDiceUsed");
+
+  if (willQty || willName || willPrep || willHD) {
     ITEM_UPDATE_STASH.set(item, {
       oldQty: willQty ? (readNumber(item, "system.quantity") || 0) : undefined,
       oldName: willName ? String(item.name ?? "") : undefined,
-      oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined
+      oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined,
+      oldHD: willHD ? readNumber(item, "system.hitDiceUsed") : undefined
     });
   }
 });
@@ -642,13 +652,14 @@ Hooks.on("updateItem", (item, change, options, userId) => {
 
   if (stash) {
     const uuid = item.uuid;
-    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldPrep: undefined, timer: null };
+    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldPrep: undefined, oldHD: undefined, timer: null };
 
     if (pending.timer) clearTimeout(pending.timer);
 
     if (pending.oldQty === undefined && stash.oldQty !== undefined) pending.oldQty = stash.oldQty;
     if (pending.oldName === undefined && stash.oldName !== undefined) pending.oldName = stash.oldName;
     if (pending.oldPrep === undefined && stash.oldPrep !== undefined) pending.oldPrep = stash.oldPrep;
+    if (pending.oldHD === undefined && stash.oldHD !== undefined) pending.oldHD = stash.oldHD;
 
     pending.timer = setTimeout(() => {
       processItemUpdate(item, pending);
@@ -712,6 +723,24 @@ async function processItemUpdate(item, data) {
       const prepIcon = `<i class="fa-solid fa-book"></i>`;
       const line = `${prepIcon} ${link} ${newPrep ? "prepared" : "unprepared"}: ${item.name}${Number.isFinite(level) ? ` (Lv ${level})` : ""}`;
       await postMonitorMessage(item.parent, line, "tiny-monitor-spellprep", "spellprep", true);
+    }
+  }
+
+  // Hit Dice
+  if (data.oldHD !== undefined) {
+    const newHD = readNumber(item, "system.hitDiceUsed");
+    const delta = newHD - data.oldHD;
+    if (delta !== 0) {
+      const hdIcon = `<i class="fa-solid fa-bed"></i>`;
+      const dieType = String(readRaw(item, "system.hitDice") || "HD");
+      const action = delta > 0 ? "expended" : "regained";
+      const cls = delta > 0 ? "tiny-monitor-hitdice-expend" : "tiny-monitor-hitdice-regain";
+      const absDelta = Math.abs(delta);
+      const hdWord = absDelta === 1 ? "Hit Die" : "Hit Dice";
+      const quantityStr = absDelta > 1 ? `${absDelta} ` : "";
+      
+      const line = `${hdIcon} <span class="tm-actor">${link}</span> <span class="tm-text">${action} ${quantityStr}${dieType} ${hdWord}</span>`;
+      await postMonitorMessage(item.parent, line, cls, "hitdice", true);
     }
   }
 }

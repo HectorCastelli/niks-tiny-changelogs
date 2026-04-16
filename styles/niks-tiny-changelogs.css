@@ -36,6 +36,12 @@ li.chat-message.tiny-monitor-msg {
   --tm-inspiration: #ff8f00;
   /* Amber */
 
+  /* Hit Dice */
+  --tm-hitdice-expend: #d84315;
+  /* Deep Orange */
+  --tm-hitdice-regain: #f57c00;
+  /* Orange */
+
   /* Items */
   --tm-item-add: #0a6b4a;
   /* Emerald */
@@ -189,6 +195,15 @@ li.chat-message.tiny-monitor-msg.tiny-monitor-spellprep {
 /* Inspiration */
 li.chat-message.tiny-monitor-msg.tiny-monitor-inspiration {
   background-color: var(--tm-inspiration);
+}
+
+/* Hit Dice */
+li.chat-message.tiny-monitor-msg.tiny-monitor-hitdice-expend {
+  background-color: var(--tm-hitdice-expend);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-hitdice-regain {
+  background-color: var(--tm-hitdice-regain);
 }
 
 /* Items */
