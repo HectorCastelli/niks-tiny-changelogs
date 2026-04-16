@@ -630,15 +630,21 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const willPrep = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") && 
     (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode"));
 
-  const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice") && item.type === "class") &&
-    willUpdatePath(change, "system.hitDiceUsed");
+  const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice", true) && item.type === "class") &&
+    (willUpdatePath(change, "system.hitDiceUsed") || willUpdatePath(change, "system.hd.spent"));
 
   if (willQty || willName || willPrep || willHD) {
+    let oldHDVal;
+    if (willHD) {
+      oldHDVal = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
+      oldHDVal = Number.isFinite(Number(oldHDVal)) ? Number(oldHDVal) : 0;
+    }
+
     ITEM_UPDATE_STASH.set(item, {
       oldQty: willQty ? (readNumber(item, "system.quantity") || 0) : undefined,
       oldName: willName ? String(item.name ?? "") : undefined,
       oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined,
-      oldHD: willHD ? readNumber(item, "system.hitDiceUsed") : undefined
+      oldHD: oldHDVal
     });
   }
 });
@@ -728,18 +734,30 @@ async function processItemUpdate(item, data) {
 
   // Hit Dice
   if (data.oldHD !== undefined) {
-    const newHD = readNumber(item, "system.hitDiceUsed");
+    let newHD = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
+    newHD = Number.isFinite(Number(newHD)) ? Number(newHD) : 0;
+    
     const delta = newHD - data.oldHD;
     if (delta !== 0) {
       const hdIcon = `<i class="fa-solid fa-bed"></i>`;
-      const dieType = String(readRaw(item, "system.hitDice") || "HD");
-      const action = delta > 0 ? "expended" : "regained";
+      const dieType = String(readRaw(item, "system.hd.denomination") || readRaw(item, "system.hitDice") || "HD");
       const cls = delta > 0 ? "tiny-monitor-hitdice-expend" : "tiny-monitor-hitdice-regain";
-      const absDelta = Math.abs(delta);
-      const hdWord = absDelta === 1 ? "Hit Die" : "Hit Dice";
-      const quantityStr = absDelta > 1 ? `${absDelta} ` : "";
       
-      const line = `${hdIcon} <span class="tm-actor">${link}</span> <span class="tm-text">${action} ${quantityStr}${dieType} ${hdWord}</span>`;
+      const maxHD = readNumber(item, "system.levels") || 0;
+      const oldRem = maxHD - data.oldHD;
+      const newRem = maxHD - newHD;
+      
+      const remDelta = newRem - oldRem;
+      const remSign = remDelta > 0 ? "+" : "-";
+      const remAbs = Math.abs(remDelta);
+      
+      const isSimple = getWorldBool("simpleOutput");
+      
+      const text = isSimple
+        ? `${dieType} hd: ${remSign}${remAbs}`
+        : `${dieType} Hit Dice: ${oldRem} ${remSign} ${remAbs} → ${newRem}`;
+      
+      const line = `${hdIcon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
       await postMonitorMessage(item.parent, line, cls, "hitdice", true);
     }
   }
