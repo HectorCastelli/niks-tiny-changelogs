@@ -700,7 +700,7 @@ async function processItemUpdate(item, data) {
 
   // Rename
   if (data.oldName !== undefined && item.name !== data.oldName) {
-    const line = `${icon} ${link} Item: ${data.oldName} → ${item.name}`;
+    const line = `${icon} ${link} ${data.oldName} → ${item.name}`;
     await postMonitorMessage(item.parent, line, "tiny-monitor-item", "item", true);
   }
 
