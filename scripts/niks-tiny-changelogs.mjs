@@ -170,8 +170,9 @@ async function postMonitorMessage(actor, line, cls, kind, isMultiline = false) {
 
 // DnD5e Spell Prep Logic
 function dnd5eIsSpellPreparedLike(item) {
-  const method = String(readRaw(item, "system.method") ?? "");
-  const preparedVal = readRaw(item, "system.prepared");
+  const methodVal = readRaw(item, "system.preparation.mode") ?? readRaw(item, "system.method");
+  const method = String(methodVal ?? "");
+  const preparedVal = readRaw(item, "system.preparation.prepared") ?? readRaw(item, "system.prepared");
   const prepared = typeof preparedVal === "boolean" ? preparedVal : Boolean(preparedVal);
 
   if (method === "prepared") return prepared;
