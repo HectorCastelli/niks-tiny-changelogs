@@ -65,7 +65,16 @@ li.chat-message.tiny-monitor-msg .message-header {
 /* -------------------------------
    Content Layout
    ------------------------------- */
+
+/* V14 uses CSS grid on chat messages (avatar column + content column).
+   Hiding the header leaves the avatar column empty, narrowing the content.
+   Override to a single-column layout so content spans the full width. */
+li.chat-message.tiny-monitor-msg {
+  grid-template-columns: 1fr;
+}
+
 li.chat-message.tiny-monitor-msg .message-content {
+  grid-column: 1 / -1;
   padding: 3px 6px;
   margin: 0;
 }
