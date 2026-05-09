@@ -231,7 +231,7 @@ Hooks.once("init", () => {
 
   game.settings.register(MOD_ID, "trackItemChanges", {
     name: "Track Item Changes",
-    hint: "If enabled, the module will monitor and log changes to items, including quantity updates, additions, deletions, and renaming.",
+    hint: "If enabled, the module will monitor and log changes to items, including quantity updates, limited uses, additions, deletions, and renaming.",
     scope: "world", config: true, type: Boolean, default: true
   });
 
@@ -627,6 +627,7 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const trackItems = getWorldBool("trackItemChanges");
   const willQty = trackItems && willUpdatePath(change, "system.quantity");
   const willName = trackItems && willUpdatePath(change, "name");
+  const willUses = trackItems && willUpdatePath(change, "system.uses.spent") && readNumber(item, "system.uses.max") > 0;
   
   const willPrep = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") && 
     (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode"));
@@ -634,7 +635,7 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice", true) && item.type === "class") &&
     (willUpdatePath(change, "system.hitDiceUsed") || willUpdatePath(change, "system.hd.spent"));
 
-  if (willQty || willName || willPrep || willHD) {
+  if (willQty || willName || willUses || willPrep || willHD) {
     let oldHDVal;
     if (willHD) {
       oldHDVal = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
@@ -644,6 +645,7 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
     ITEM_UPDATE_STASH.set(item, {
       oldQty: willQty ? (readNumber(item, "system.quantity") || 0) : undefined,
       oldName: willName ? String(item.name ?? "") : undefined,
+      oldUses: willUses ? readNumber(item, "system.uses.max") - readNumber(item, "system.uses.spent") : undefined,
       oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined,
       oldHD: oldHDVal
     });
@@ -659,12 +661,13 @@ Hooks.on("updateItem", (item, change, options, userId) => {
 
   if (stash) {
     const uuid = item.uuid;
-    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldPrep: undefined, oldHD: undefined, timer: null };
+    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldUses: undefined, oldPrep: undefined, oldHD: undefined, timer: null };
 
     if (pending.timer) clearTimeout(pending.timer);
 
     if (pending.oldQty === undefined && stash.oldQty !== undefined) pending.oldQty = stash.oldQty;
     if (pending.oldName === undefined && stash.oldName !== undefined) pending.oldName = stash.oldName;
+    if (pending.oldUses === undefined && stash.oldUses !== undefined) pending.oldUses = stash.oldUses;
     if (pending.oldPrep === undefined && stash.oldPrep !== undefined) pending.oldPrep = stash.oldPrep;
     if (pending.oldHD === undefined && stash.oldHD !== undefined) pending.oldHD = stash.oldHD;
 
@@ -713,6 +716,27 @@ async function processItemUpdate(item, data) {
         const line = `${icon} ${link} ${safeItemName}: ${text}`;
         await postMonitorMessage(item.parent, line, delta > 0 ? "tiny-monitor-item-inc" : "tiny-monitor-item-dec", "item", true);
       }
+    }
+  }
+
+  // Limited Uses
+  if (data.oldUses !== undefined) {
+    const max = readNumber(item, "system.uses.max");
+    const newUses = max - readNumber(item, "system.uses.spent");
+    const delta = newUses - data.oldUses;
+
+    if (delta !== 0 && max > 0) {
+      const usesIcon = `<i class="fa-solid fa-battery-half"></i>`;
+      const safeItemName = escapeHTML(item.name);
+      const sign = delta > 0 ? "+" : "-";
+      const abs = Math.abs(delta);
+      const isSimple = getWorldBool("simpleOutput");
+      const text = isSimple
+        ? `Uses: ${sign} ${abs}`
+        : `Uses: ${data.oldUses} ${sign} ${abs} → ${newUses} / ${max}`;
+      const cls = delta > 0 ? "tiny-monitor-item-inc" : "tiny-monitor-item-dec";
+      const line = `${usesIcon} ${link} ${safeItemName}: ${text}`;
+      await postMonitorMessage(item.parent, line, cls, "item-uses", true);
     }
   }
 

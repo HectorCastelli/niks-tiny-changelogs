@@ -22,6 +22,7 @@ Logs whenever an actor gains or loses currency (e.g., Gold, Silver, Copper). It 
 ### 🎒 Item & Inventory Tracking
 Keep an eye on what your players pick up or consume!
 - **Quantity Adjustments**: Logs when items are consumed, bought, or given away.
+- **Limited Uses**: Logs when an item with limited uses spends or regains uses.
 - **Additions & Deletions**: Logs when an item is added to an actor or removed entirely.
 - **Renaming**: Logs when an item's name is changed.
 
