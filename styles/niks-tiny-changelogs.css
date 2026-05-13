@@ -48,6 +48,22 @@ li.chat-message.tiny-monitor-msg {
   --tm-item-rename: #37474f;
   /* Slate */
 
+  /* Equip / Unequip */
+  --tm-equip: #1565c0;
+  /* Blue */
+  --tm-unequip: #5d4037;
+  /* Brown */
+
+  /* Active Effects */
+  --tm-effect-add: #2e7d32;
+  /* Forest Green */
+  --tm-effect-remove: #b71c1c;
+  /* Deep Red */
+  --tm-effect-enable: #00838f;
+  /* Teal */
+  --tm-effect-disable: #616161;
+  /* Grey */
+
   /* Foundry V14 Grid Reset */
   display: grid !important;
   grid-template-columns: 1fr !important;
@@ -226,6 +242,32 @@ li.chat-message.tiny-monitor-msg.tiny-monitor-item-dec {
 
 li.chat-message.tiny-monitor-msg.tiny-monitor-item {
   background-color: var(--tm-item-rename);
+}
+
+/* Equip / Unequip */
+li.chat-message.tiny-monitor-msg.tiny-monitor-equip {
+  background-color: var(--tm-equip);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-unequip {
+  background-color: var(--tm-unequip);
+}
+
+/* Active Effects */
+li.chat-message.tiny-monitor-msg.tiny-monitor-effect-add {
+  background-color: var(--tm-effect-add);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-effect-remove {
+  background-color: var(--tm-effect-remove);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-effect-enable {
+  background-color: var(--tm-effect-enable);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-effect-disable {
+  background-color: var(--tm-effect-disable);
 }
 
 /* Accessibility Support */

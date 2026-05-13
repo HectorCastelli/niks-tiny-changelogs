@@ -29,6 +29,12 @@ Keep an eye on what your players pick up or consume!
 ### 🗑️ Chat Moderation
 When a player deletes a chat message, the module can automatically clone the original message and whisper it to the GM(s). This is perfect for keeping an eye on accidentally (or purposely) deleted rolls!
 
+### 👕 Equip / Unequip Tracking *(disabled by default)*
+Optionally logs when an item is equipped or unequipped on an actor. Enable this via the **Track Equip / Unequip** setting.
+
+### ✨ Active Effect Tracking *(disabled by default)*
+Optionally logs when Active Effects are added, removed, enabled, or disabled on an actor. Enable this via the **Track Active Effects** setting.
+
 ### 🐉 DnD5e Specific Features
 The module includes deep integration with the generic DnD5e system (5.2+):
 - **Heroic Inspiration**: Logs when a player gains or spends Inspiration.
@@ -45,7 +51,7 @@ You can customize the module's behavior in the settings to perfectly match your 
   - *GM Only* (Private)
   - *GM + Owners* (Default)
   - *GM + All Players* (Public)
-- **Feature Toggles**: You can individually enable or disable Currency Tracking, Item Changes, Deleted Message Tracking, and all DnD5e-specific trackers.
+- **Feature Toggles**: You can individually enable or disable Currency Tracking, Item Changes, Deleted Message Tracking, Equip/Unequip Tracking, Active Effect Tracking, and all DnD5e-specific trackers.
 
 ### Advanced Data Paths
 If the module fails to detect your system's data structure automatically, disable **Auto-Detect HP Paths** and provide the exact system data paths for:

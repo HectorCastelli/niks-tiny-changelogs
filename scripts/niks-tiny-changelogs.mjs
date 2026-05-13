@@ -11,6 +11,8 @@ const DEBOUNCE_MS = 350;
 const ITEM_UPDATE_STASH = new WeakMap();
 const ITEM_DELETE_STASH = new WeakMap();
 
+const EFFECT_DELETE_STASH = new WeakMap();
+
 // Debounce Maps: Key = Document UUID
 const ACTOR_DEBOUNCE = new Map();
 const ITEM_DEBOUNCE = new Map();
@@ -239,6 +241,18 @@ Hooks.once("init", () => {
     name: "Track Deleted Chat Messages",
     hint: "If enabled, when a player deletes a chat message, a copy of it is whispered to the GM(s).",
     scope: "world", config: true, type: Boolean, default: true
+  });
+
+  game.settings.register(MOD_ID, "trackEquipUnequip", {
+    name: "Track Equip / Unequip",
+    hint: "If enabled, the module will log when items are equipped or unequipped on an actor.",
+    scope: "world", config: true, type: Boolean, default: false
+  });
+
+  game.settings.register(MOD_ID, "trackActiveEffects", {
+    name: "Track Active Effects",
+    hint: "If enabled, the module will log when Active Effects are added, removed, enabled, or disabled on an actor.",
+    scope: "world", config: true, type: Boolean, default: false
   });
 
   // -------------------------------------------------------------------
@@ -635,7 +649,9 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice", true) && item.type === "class") &&
     (willUpdatePath(change, "system.hitDiceUsed") || willUpdatePath(change, "system.hd.spent"));
 
-  if (willQty || willName || willUses || willPrep || willHD) {
+  const willEquip = getWorldBool("trackEquipUnequip") && willUpdatePath(change, "system.equipped");
+
+  if (willQty || willName || willUses || willPrep || willHD || willEquip) {
     let oldHDVal;
     if (willHD) {
       oldHDVal = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
@@ -647,7 +663,8 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
       oldName: willName ? String(item.name ?? "") : undefined,
       oldUses: willUses ? readNumber(item, "system.uses.max") - readNumber(item, "system.uses.spent") : undefined,
       oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined,
-      oldHD: oldHDVal
+      oldHD: oldHDVal,
+      oldEquip: willEquip ? Boolean(readRaw(item, "system.equipped")) : undefined
     });
   }
 });
@@ -655,13 +672,13 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
 Hooks.on("updateItem", (item, change, options, userId) => {
   if (userId !== game.userId || !(item.parent instanceof Actor)) return;
 
-  // Debounce Quantity/Name/Prep changes
+  // Debounce Quantity/Name/Prep/Equip changes
   const stash = ITEM_UPDATE_STASH.get(item);
   ITEM_UPDATE_STASH.delete(item);
 
   if (stash) {
     const uuid = item.uuid;
-    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldUses: undefined, oldPrep: undefined, oldHD: undefined, timer: null };
+    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldUses: undefined, oldPrep: undefined, oldHD: undefined, oldEquip: undefined, timer: null };
 
     if (pending.timer) clearTimeout(pending.timer);
 
@@ -670,6 +687,7 @@ Hooks.on("updateItem", (item, change, options, userId) => {
     if (pending.oldUses === undefined && stash.oldUses !== undefined) pending.oldUses = stash.oldUses;
     if (pending.oldPrep === undefined && stash.oldPrep !== undefined) pending.oldPrep = stash.oldPrep;
     if (pending.oldHD === undefined && stash.oldHD !== undefined) pending.oldHD = stash.oldHD;
+    if (pending.oldEquip === undefined && stash.oldEquip !== undefined) pending.oldEquip = stash.oldEquip;
 
     pending.timer = setTimeout(() => {
       processItemUpdate(item, pending);
@@ -786,6 +804,19 @@ async function processItemUpdate(item, data) {
       await postMonitorMessage(item.parent, line, cls, "hitdice", true);
     }
   }
+
+  // Equip / Unequip
+  if (data.oldEquip !== undefined) {
+    const newEquip = Boolean(readRaw(item, "system.equipped"));
+    if (newEquip !== data.oldEquip) {
+      const safeItemName = escapeHTML(item.name);
+      const equipIcon = `<i class="fa-solid fa-shirt"></i>`;
+      const action = newEquip ? "equipped" : "unequipped";
+      const cls = newEquip ? "tiny-monitor-equip" : "tiny-monitor-unequip";
+      const line = `${equipIcon} ${link} ${action} ${safeItemName}`;
+      await postMonitorMessage(item.parent, line, cls, "equip", true);
+    }
+  }
 }
 
 // -------------------------------
@@ -829,6 +860,91 @@ Hooks.on("deleteItem", async (item, options, userId) => {
     whisper,
     flags: { [MOD_ID]: { isMonitorMsg: true, kind: "item", cls: "tiny-monitor-item-dec" } }
   });
+});
+
+// -------------------------------
+// Active Effect Tracking
+// -------------------------------
+
+/**
+ * Resolve the owning Actor from an ActiveEffect, handling effects on Items (e.g., DnD5e transferred effects).
+ */
+function resolveEffectActor(effect) {
+  // Direct: effect embedded on an Actor
+  if (effect.parent instanceof Actor) return effect.parent;
+  // Effect on an Item embedded on an Actor
+  if (effect.parent?.parent instanceof Actor) return effect.parent.parent;
+  // DnD5e: Item5e may expose .actor
+  if (effect.parent?.actor instanceof Actor) return effect.parent.actor;
+  // Fallback: search actors for the item that owns this effect
+  if (effect.parent) {
+    const itemId = effect.parent.id ?? effect.parent._id;
+    if (itemId) {
+      for (const actor of game.actors) {
+        if (actor.items.get(itemId)) return actor;
+      }
+    }
+  }
+  return null;
+}
+
+Hooks.on("createActiveEffect", async (effect, options, userId) => {
+  if (userId !== game.userId || !getWorldBool("trackActiveEffects")) return;
+  const actor = resolveEffectActor(effect);
+  if (!actor) return;
+
+  const link = getActorLink(actor);
+  const safeEffName = escapeHTML(effect.name || "Unknown Effect");
+  const icon = `<i class="fa-solid fa-sparkles"></i>`;
+  const line = `${icon} ${link} gained effect: ${safeEffName}`;
+  await postMonitorMessage(actor, line, "tiny-monitor-effect-add", "effect", true);
+});
+
+Hooks.on("preDeleteActiveEffect", (effect, options, userId) => {
+  if (!getWorldBool("trackActiveEffects")) return;
+  const actor = resolveEffectActor(effect);
+  if (!actor) return;
+
+  EFFECT_DELETE_STASH.set(effect, {
+    link: getActorLink(actor),
+    whisper: buildRecipients(actor),
+    name: effect.name || "Unknown Effect",
+    actor
+  });
+});
+
+Hooks.on("deleteActiveEffect", async (effect, options, userId) => {
+  if (userId !== game.userId || !getWorldBool("trackActiveEffects")) return;
+  const payload = EFFECT_DELETE_STASH.get(effect);
+  EFFECT_DELETE_STASH.delete(effect);
+  if (!payload) return;
+
+  const safeEffName = escapeHTML(payload.name);
+  const icon = `<i class="fa-solid fa-sparkles"></i>`;
+  const line = `${icon} ${payload.link} lost effect: ${safeEffName}`;
+
+  await ChatMessage.create({
+    content: `<div class="tiny-monitor-line tm-multiline">${line}</div>`,
+    whisper: payload.whisper,
+    flags: { [MOD_ID]: { isMonitorMsg: true, kind: "effect", cls: "tiny-monitor-effect-remove" } }
+  });
+});
+
+Hooks.on("updateActiveEffect", async (effect, change, options, userId) => {
+  if (userId !== game.userId || !getWorldBool("trackActiveEffects")) return;
+  if (!foundry.utils.hasProperty(change, "disabled")) return;
+
+  const actor = resolveEffectActor(effect);
+  if (!actor) return;
+
+  const newDisabled = Boolean(effect.disabled);
+  const link = getActorLink(actor);
+  const safeEffName = escapeHTML(effect.name || "Unknown Effect");
+  const icon = `<i class="fa-solid fa-sparkles"></i>`;
+  const action = newDisabled ? "disabled" : "enabled";
+  const cls = newDisabled ? "tiny-monitor-effect-disable" : "tiny-monitor-effect-enable";
+  const line = `${icon} ${link} ${action} effect: ${safeEffName}`;
+  await postMonitorMessage(actor, line, cls, "effect", true);
 });
 
 function applyMonitorStyling(message, html) {
