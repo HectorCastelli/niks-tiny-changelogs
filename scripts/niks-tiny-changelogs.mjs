@@ -289,6 +289,12 @@ Hooks.once("init", () => {
     scope: "world", config: true, type: Boolean, default: true
   });
 
+  game.settings.register(MOD_ID, "trackDnd5eXP", {
+    name: "Track Experience Points (DnD5e)",
+    hint: "If enabled, logs when a DnD5e character gains or loses Experience Points.",
+    scope: "world", config: true, type: Boolean, default: true
+  });
+
   // -------------------------------------------------------------------
   // 3. Advanced / Manual Path Configuration
   // -------------------------------------------------------------------
@@ -371,7 +377,13 @@ Hooks.on("preUpdateActor", (actor, update, options, userId) => {
     }
   }
 
-  if (!willHP && !willTHP && !willTHPMax && !willInsp && !currencyPayload && !deathPayload && !spellSlotsPayload) return;
+  const xpPath = "system.details.xp.value";
+  let xpPayload = null;
+  if (sys === "dnd5e" && getWorldBool("trackDnd5eXP", true) && actor.type === "character" && willUpdatePath(update, xpPath)) {
+    xpPayload = { oldXP: readNumber(actor, xpPath) };
+  }
+
+  if (!willHP && !willTHP && !willTHPMax && !willInsp && !currencyPayload && !deathPayload && !spellSlotsPayload && !xpPayload) return;
 
   // Stash in options for the updateActor hook to pick up
   options[MOD_ID] = {
@@ -381,7 +393,8 @@ Hooks.on("preUpdateActor", (actor, update, options, userId) => {
     oldInspiration: willInsp ? Boolean(readRaw(actor, inspPath)) : undefined,
     currency: currencyPayload ? { ...currencyPayload, old: Object.fromEntries(currencyPayload.coins.map(k => [k, readNumber(actor, `${currencyPayload.basePath}.${k}`)])) } : undefined,
     deathSaves: deathPayload,
-    spellSlots: spellSlotsPayload
+    spellSlots: spellSlotsPayload,
+    xp: xpPayload
   };
 });
 
@@ -403,6 +416,7 @@ Hooks.on("updateActor", (actor, update, options, userId) => {
     currencyOld: {},
     deathSavesOld: undefined,
     spellSlotsOld: {},
+    oldXP: undefined,
     timer: null
   };
 
@@ -435,6 +449,10 @@ Hooks.on("updateActor", (actor, update, options, userId) => {
         pending.spellSlotsOld[slot.level] = { level: slot.level, path: slot.path, oldValue: slot.oldValue };
       }
     }
+  }
+
+  if (payload.xp && pending.oldXP === undefined) {
+    pending.oldXP = payload.xp.oldXP;
   }
 
   // Set new timer
@@ -606,6 +624,26 @@ async function processActorUpdate(actor, data) {
         const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${action} ${quantityStr}level ${level} ${slotWord}</span>`;
         await postMonitorMessage(actor, line, cls, "spellslot");
       }
+    }
+  }
+
+  // Experience Points
+  if (data.oldXP !== undefined && game.system.id === "dnd5e") {
+    const newXP = readNumber(actor, "system.details.xp.value");
+    const delta = newXP - data.oldXP;
+    if (delta !== 0) {
+      const icon = `<i class="fa-solid fa-star"></i>`;
+      const sign = delta > 0 ? "+" : "-";
+      const abs = Math.abs(delta);
+      const isSimple = getWorldBool("simpleOutput");
+      const cls = delta > 0 ? "tiny-monitor-xp-gain" : "tiny-monitor-xp-loss";
+
+      const text = isSimple
+        ? `XP: ${sign} ${abs.toLocaleString()}`
+        : `XP: ${data.oldXP.toLocaleString()} ${sign} ${abs.toLocaleString()} → ${newXP.toLocaleString()}`;
+
+      const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
+      await postMonitorMessage(actor, line, cls, "xp");
     }
   }
 }

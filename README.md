@@ -41,6 +41,8 @@ The module includes deep integration with the generic DnD5e system (5.2+):
 - **Death Saves**: Separately tracks successes and failures during tense death saving throws.
 - **Spell Preparation**: Logs when a spell is prepared or unprepared from a character's spell list.
 - **Spell Slots**: Tracks the expenditure and regaining of spell slots across all levels.
+- **Hit Dice**: Logs when Hit Dice are expended or regained.
+- **Experience Points**: Logs when a character gains or loses XP.
 
 ## Configuration & Settings
 

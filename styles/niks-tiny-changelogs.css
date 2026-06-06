@@ -64,6 +64,12 @@ li.chat-message.tiny-monitor-msg {
   --tm-effect-disable: #616161;
   /* Grey */
 
+  /* Experience Points */
+  --tm-xp-gain: #9e7c1a;
+  /* Dark Gold */
+  --tm-xp-loss: #6d4c41;
+  /* Brown */
+
   /* Foundry V14 Grid Reset */
   display: grid !important;
   grid-template-columns: 1fr !important;
@@ -268,6 +274,15 @@ li.chat-message.tiny-monitor-msg.tiny-monitor-effect-enable {
 
 li.chat-message.tiny-monitor-msg.tiny-monitor-effect-disable {
   background-color: var(--tm-effect-disable);
+}
+
+/* Experience Points */
+li.chat-message.tiny-monitor-msg.tiny-monitor-xp-gain {
+  background-color: var(--tm-xp-gain);
+}
+
+li.chat-message.tiny-monitor-msg.tiny-monitor-xp-loss {
+  background-color: var(--tm-xp-loss);
 }
 
 /* Accessibility Support */
