@@ -130,7 +130,6 @@ function willUpdatePath(update, path) {
 }
 
 function buildRecipients(actor) {
-  const mode = game.settings.get(MOD_ID, "npcAudience") ?? "gm-owners";
   const gmUsers = game.users.filter(u => u.isGM);
   const owners = actor.testUserPermission
     ? game.users.filter(u => actor.testUserPermission(u, CONST.DOCUMENT_OWNERSHIP_LEVELS.OWNER))
@@ -138,12 +137,25 @@ function buildRecipients(actor) {
 
   const uniq = (...lists) => [...new Map(lists.flat().map(u => [u.id, u])).values()];
 
+  // NPC-specific audience (unchanged existing behaviour)
   if (actor.type === "npc") {
-    if (mode === "gm") return gmUsers.map(u => u.id);
-    if (mode === "gm-players") return uniq(gmUsers, game.users.filter(u => !u.isGM)).map(u => u.id);
+    const npcMode = game.settings.get(MOD_ID, "npcAudience") ?? "gm-owners";
+    if (npcMode === "gm") return gmUsers.map(u => u.id);
+    if (npcMode === "gm-players") return uniq(gmUsers, game.users.filter(u => !u.isGM)).map(u => u.id);
+    // "gm-owners" falls through to the whisperTarget logic below
   }
 
-  // Fallback to GM-only if no owners could be determined
+  // General whisper target setting
+  const target = game.settings.get(MOD_ID, "whisperTarget") ?? "gm-player";
+
+  if (target === "everyone") return [];  // empty array → public message
+  if (target === "gm") return gmUsers.map(u => u.id);
+  if (target === "player") {
+    const playerOwners = owners.filter(u => !u.isGM);
+    return playerOwners.length > 0 ? playerOwners.map(u => u.id) : gmUsers.map(u => u.id);
+  }
+
+  // Default: "gm-player" — GM + owners
   const recipients = uniq(gmUsers, owners).map(u => u.id);
   return recipients.length > 0 ? recipients : gmUsers.map(u => u.id);
 }
@@ -163,11 +175,12 @@ async function postMonitorMessage(actor, line, cls, kind, isMultiline = false) {
   const whisper = buildRecipients(actor);
   const cssLine = isMultiline ? "tiny-monitor-line tm-multiline" : "tiny-monitor-line";
 
-  await ChatMessage.create({
+  const msgData = {
     content: `<div class="${cssLine}">${line}</div>`,
-    whisper,
     flags: { [MOD_ID]: { isMonitorMsg: true, kind, cls } }
-  });
+  };
+  if (whisper.length > 0) msgData.whisper = whisper;
+  await ChatMessage.create(msgData);
 }
 
 // DnD5e Spell Prep Logic
@@ -215,6 +228,14 @@ Hooks.once("init", () => {
     name: "Simplified Output",
     hint: "If enabled, logs will only show the adjustment amount (e.g., '+5') instead of the full transition (e.g., '10 + 5 -> 15'). This provides a cleaner, less verbose chat log.",
     scope: "world", config: true, type: Boolean, default: false
+  });
+
+  game.settings.register(MOD_ID, "whisperTarget", {
+    name: "Whisper Target",
+    hint: "Determines who receives the changelog whisper messages for PC actors. 'GM + Player' whispers to the GM and the owning player, 'Player only' whispers only to the owning player, 'GM only' whispers only to the GM, and 'Everyone' posts the message publicly.",
+    scope: "world", config: true, type: String,
+    choices: { "gm-player": "GM + Player (default)", "player": "Player only", "gm": "GM only", "everyone": "Everyone" },
+    default: "gm-player"
   });
 
   game.settings.register(MOD_ID, "npcAudience", {
@@ -893,11 +914,12 @@ Hooks.on("deleteItem", async (item, options, userId) => {
     ? `${icon} ${link} deleted ${name}`
     : `${icon} ${link} ${name}: ${oldQty} - ${oldQty} → 0`;
 
-  await ChatMessage.create({
+  const msgData = {
     content: `<div class="tiny-monitor-line tm-multiline">${line}</div>`,
-    whisper,
     flags: { [MOD_ID]: { isMonitorMsg: true, kind: "item", cls: "tiny-monitor-item-dec" } }
-  });
+  };
+  if (whisper.length > 0) msgData.whisper = whisper;
+  await ChatMessage.create(msgData);
 });
 
 // -------------------------------
@@ -961,11 +983,12 @@ Hooks.on("deleteActiveEffect", async (effect, options, userId) => {
   const icon = `<i class="fa-solid fa-sparkles"></i>`;
   const line = `${icon} ${payload.link} lost effect: ${safeEffName}`;
 
-  await ChatMessage.create({
+  const effectMsgData = {
     content: `<div class="tiny-monitor-line tm-multiline">${line}</div>`,
-    whisper: payload.whisper,
     flags: { [MOD_ID]: { isMonitorMsg: true, kind: "effect", cls: "tiny-monitor-effect-remove" } }
-  });
+  };
+  if (payload.whisper.length > 0) effectMsgData.whisper = payload.whisper;
+  await ChatMessage.create(effectMsgData);
 });
 
 Hooks.on("updateActiveEffect", async (effect, change, options, userId) => {
