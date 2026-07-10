@@ -285,6 +285,38 @@ li.chat-message.tiny-monitor-msg.tiny-monitor-xp-loss {
   background-color: var(--tm-xp-loss);
 }
 
+/* -------------------------------
+   Compact Mode (expand on hover)
+   ------------------------------- */
+li.chat-message.tiny-monitor-msg.tm-compact .message-content .tiny-monitor-line {
+  max-height: 1.3em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: max-height 0.25s ease;
+}
+
+/* Override the multiline clamp when compact is active */
+li.chat-message.tiny-monitor-msg.tm-compact .message-content .tiny-monitor-line.tm-multiline {
+  display: block;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+li.chat-message.tiny-monitor-msg.tm-compact:hover .message-content .tiny-monitor-line {
+  max-height: 10em;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
+  text-overflow: unset;
+}
+
+li.chat-message.tiny-monitor-msg.tm-compact:hover .message-content .tiny-monitor-line.tm-multiline {
+  white-space: normal;
+  text-overflow: unset;
+}
+
 /* Accessibility Support */
 @media (prefers-contrast: more) {
   li.chat-message.tiny-monitor-msg .message-content .tiny-monitor-line {

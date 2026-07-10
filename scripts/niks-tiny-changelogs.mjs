@@ -224,6 +224,12 @@ Hooks.once("init", () => {
   // 1. General Settings
   // -------------------------------------------------------------------
 
+  game.settings.register(MOD_ID, "compactMessages", {
+    name: "Compact Messages",
+    hint: "If enabled, changelog messages are limited to a single line and expand when hovered over. Useful for keeping the chat log tidy.",
+    scope: "world", config: true, type: Boolean, default: true
+  });
+
   game.settings.register(MOD_ID, "simpleOutput", {
     name: "Simplified Output",
     hint: "If enabled, logs will only show the adjustment amount (e.g., '+5') instead of the full transition (e.g., '10 + 5 -> 15'). This provides a cleaner, less verbose chat log.",
@@ -1018,6 +1024,7 @@ function applyMonitorStyling(message, html) {
   li.classList.add("tiny-monitor-msg");
   const cls = message.getFlag(MOD_ID, "cls");
   if (cls) li.classList.add(cls);
+  if (getWorldBool("compactMessages", true)) li.classList.add("tm-compact");
 }
 
 Hooks.on("renderChatMessage", applyMonitorStyling);      // V13 compat
