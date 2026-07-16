@@ -4,7 +4,7 @@
 
 **Nik's Tiny Change Logs** is a lightweight Foundry VTT module that monitors changes to your actors and tokens, posting clean, concise, one-line chat messages to keep everyone informed without cluttering the chat log. 
 
-It keeps track of health changes, currency adjustments, item inventory updates, monitors deleted chat messages, and includes specialized tracking for DnD5e mechanics like inspiration, death saves, and spell usage.
+It keeps track of health changes, currency adjustments, item inventory updates, monitors deleted chat messages, and includes specialized tracking for DnD5e mechanics like inspiration, death saves, and spell usage, as well as Mörk Borg mechanics like Omens, Powers, and Silver.
 
 ## Features
 
@@ -14,7 +14,7 @@ Automatically monitors and logs changes to:
 - **Temporary HP**: Tracks gains and losses of temp health.
 - **Temp Max HP**: Logs adjustments to temporary maximum health.
 
-The module features **Auto-Detection** for health data paths, working out of the box with major systems like `dnd5e`, `pf2e`, `shadowdark`, and `demonlord`. It also uses a heuristic probe for unsupported systems, but allows you to manually specify the data paths in the settings if automatic detection fails.
+The module features **Auto-Detection** for health data paths, working out of the box with major systems like `dnd5e`, `pf2e`, `shadowdark`, `demonlord`, and `morkborg`. It also uses a heuristic probe for unsupported systems, but allows you to manually specify the data paths in the settings if automatic detection fails.
 
 ### 💰 Currency Tracking
 Logs whenever an actor gains or loses currency (e.g., Gold, Silver, Copper). It automatically detects the correct currency paths for `dnd5e` and `pf2e`, but can be manually configured for other systems.
@@ -44,6 +44,12 @@ The module includes deep integration with the generic DnD5e system (5.2+):
 - **Hit Dice**: Logs when Hit Dice are expended or regained.
 - **Experience Points**: Logs when a character gains or loses XP.
 
+### 💀 Mörk Borg Specific Features
+The module includes integration with the Mörk Borg system:
+- **Omens**: Logs when a character gains or spends Omens.
+- **Powers**: Logs when a character uses or recovers Powers.
+- **Silver**: Tracked automatically via the Currency Tracking setting.
+
 ## Configuration & Settings
 
 You can customize the module's behavior in the settings to perfectly match your table's needs:
@@ -64,4 +70,4 @@ If the module fails to detect your system's data structure automatically, disabl
 
 ## Compatibility
 - **Foundry VTT**: Verified for V13 and V14.
-- **Systems**: Fully supports `dnd5e`, `pf2e`, `shadowdark`, and `demonlord` out of the box. Other systems are supported dynamically or via manual configuration.
+- **Systems**: Fully supports `dnd5e`, `pf2e`, `shadowdark`, `demonlord`, and `morkborg` out of the box. Other systems are supported dynamically or via manual configuration.

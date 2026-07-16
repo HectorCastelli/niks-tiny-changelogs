@@ -1,16 +1,19 @@
 // Tiny HP Monitor for Foundry VTT
-// Multi-system (auto-detect + configurable paths).
+// Multi-system (auto-detect + configurable paths) with System Adapters.
+
+import SystemManager from "./systems/index.mjs";
 
 const MOD_ID = "niks-tiny-changelogs";
 const MAX_NAME_CHARS = 25;
 const DEBOUNCE_MS = 350;
+
+let adapter;
 
 // -------------------------------
 // State & Storage
 // -------------------------------
 const ITEM_UPDATE_STASH = new WeakMap();
 const ITEM_DELETE_STASH = new WeakMap();
-
 const EFFECT_DELETE_STASH = new WeakMap();
 
 // Debounce Maps: Key = Document UUID
@@ -51,67 +54,14 @@ function getWorldPath(key) {
   } catch { return null; }
 }
 
-function detectSystemPaths(sampleActor) {
-  const sys = game.system?.id || "";
-
-  if (sys === "dnd5e") {
-    return {
-      hpPath: "system.attributes.hp.value",
-      tempPath: "system.attributes.hp.temp",
-      tempMaxPath: "system.attributes.hp.tempmax",
-      damageSystem: false
-    };
-  }
-
-  if (sys === "demonlord") return { hpPath: "system.characteristics.health.value", tempPath: null, tempMaxPath: "system.characteristics.health.max", damageSystem: true };
-  if (sys === "pf2e") return { hpPath: "system.attributes.hp.value", tempPath: "system.attributes.hp.temp", tempMaxPath: null, damageSystem: false };
-  if (sys === "shadowdark") return { hpPath: "system.hp.value", tempPath: null, tempMaxPath: null, damageSystem: false };
-
-  // Heuristic Probe
-  const candidatesHP = ["system.attributes.hp.value", "system.hp.value", "system.health.value"];
-  const candidatesTemp = ["system.attributes.hp.temp", "system.hp.temp"];
-  const candidatesTempMax = ["system.attributes.hp.tempmax", "system.hp.tempmax"];
-
-  const hpPath = candidatesHP.find(p => Number.isFinite(Number(foundry.utils.getProperty(sampleActor ?? {}, p)))) || null;
-  const tempPath = candidatesTemp.find(p => Number.isFinite(Number(foundry.utils.getProperty(sampleActor ?? {}, p)))) || null;
-  const tempMaxPath = candidatesTempMax.find(p => Number.isFinite(Number(foundry.utils.getProperty(sampleActor ?? {}, p)))) || null;
-
-  return { hpPath, tempPath, tempMaxPath, damageSystem: false };
-}
-
 function resolvePaths(actor) {
-  if (getWorldBool("autoDetectPaths", true)) return detectSystemPaths(actor);
+  if (getWorldBool("autoDetectPaths", true)) return adapter.getHealthPaths(actor);
   return {
     hpPath: getWorldPath("hpPath"),
     tempPath: getWorldPath("tempHpPath"),
     tempMaxPath: getWorldPath("tempHpMaxPath"),
-    damageSystem: false
+    damageSystem: adapter.getHealthPaths(actor).damageSystem
   };
-}
-
-function getDnd5eInspirationPath() { return "system.attributes.inspiration"; }
-function getDnd5eDeathPaths() { return { successPath: "system.attributes.death.success", failurePath: "system.attributes.death.failure" }; }
-
-function getDnd5eSpellSlotPaths() {
-  const levels = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-  return levels.map(lvl => ({ level: lvl, path: `system.spells.spell${lvl}.value` }));
-}
-
-function detectCurrencyInfo(actor) {
-  const manualBase = getWorldPath("currencyBasePath");
-  const sys = game.system.id;
-  const candidates = manualBase ? [manualBase] : (sys === "pf2e" ? ["system.currencies", "system.currency"] : ["system.currency"]);
-
-  let basePath = null, obj = null;
-  for (const p of candidates) {
-    const o = foundry.utils.getProperty(actor, p);
-    if (o && typeof o === "object") { basePath = p; obj = o; break; }
-  }
-  if (!basePath) return { basePath: null, coins: [] };
-
-  const all = ["pp", "gp", "ep", "sp", "cp"];
-  const coins = all.filter(k => Object.prototype.hasOwnProperty.call(obj, k));
-  return { basePath, coins };
 }
 
 function readNumber(doc, path) {
@@ -137,12 +87,11 @@ function buildRecipients(actor) {
 
   const uniq = (...lists) => [...new Map(lists.flat().map(u => [u.id, u])).values()];
 
-  // NPC-specific audience (unchanged existing behaviour)
+  // NPC-specific audience
   if (actor.type === "npc") {
     const npcMode = game.settings.get(MOD_ID, "npcAudience") ?? "gm-owners";
     if (npcMode === "gm") return gmUsers.map(u => u.id);
     if (npcMode === "gm-players") return uniq(gmUsers, game.users.filter(u => !u.isGM)).map(u => u.id);
-    // "gm-owners" falls through to the whisperTarget logic below
   }
 
   // General whisper target setting
@@ -160,17 +109,6 @@ function buildRecipients(actor) {
   return recipients.length > 0 ? recipients : gmUsers.map(u => u.id);
 }
 
-function coinLabel(denom, systemId) {
-  const labels = {
-    dnd5e: { pp: "Platinum", gp: "Gold", ep: "Electrum", sp: "Silver", cp: "Copper" },
-    pf2e: { pp: "Platinum", gp: "Gold", sp: "Silver", cp: "Copper" }
-  };
-  return labels[systemId]?.[denom] ?? denom.toUpperCase();
-}
-
-/**
- * Helper to post the chat message
- */
 async function postMonitorMessage(actor, line, cls, kind, isMultiline = false) {
   const whisper = buildRecipients(actor);
   const cssLine = isMultiline ? "tiny-monitor-line tm-multiline" : "tiny-monitor-line";
@@ -183,46 +121,13 @@ async function postMonitorMessage(actor, line, cls, kind, isMultiline = false) {
   await ChatMessage.create(msgData);
 }
 
-// DnD5e Spell Prep Logic
-function dnd5eIsSpellPreparedLike(item) {
-  const methodVal = readRaw(item, "system.preparation.mode") ?? readRaw(item, "system.method");
-  const method = String(methodVal ?? "");
-  const preparedVal = readRaw(item, "system.preparation.prepared") ?? readRaw(item, "system.prepared");
-  const prepared = typeof preparedVal === "boolean" ? preparedVal : Boolean(preparedVal);
-
-  if (method === "prepared") return prepared;
-  if (method === "always") return true;
-  if (!method && typeof preparedVal !== "undefined") return prepared;
-  return false;
-}
-
-function computePreparedAfter(item, change) {
-  const has = (p) => foundry.utils.hasProperty(change, p);
-  const get = (p) => foundry.utils.getProperty(change, p);
-
-  let methodGiven = has("system.method") ? String(get("system.method")) : (has("system.preparation.mode") ? String(get("system.preparation.mode")) : undefined);
-  let preparedGiven = has("system.prepared") ? Boolean(get("system.prepared")) : (has("system.preparation.prepared") ? Boolean(get("system.preparation.prepared")) : undefined);
-
-  if (preparedGiven !== undefined && methodGiven === undefined) methodGiven = "prepared";
-
-  if (methodGiven !== undefined) {
-    if (methodGiven === "always") return true;
-    if (methodGiven === "prepared") {
-      return preparedGiven !== undefined ? preparedGiven : Boolean(readRaw(item, "system.prepared"));
-    }
-    return false;
-  }
-  return dnd5eIsSpellPreparedLike(item);
-}
-
 // -------------------------------
 // Settings
 // -------------------------------
 
 Hooks.once("init", () => {
-  // -------------------------------------------------------------------
-  // 1. General Settings
-  // -------------------------------------------------------------------
+  // Initialize adapter early
+  adapter = SystemManager.getAdapter(game.system.id, MOD_ID);
 
   game.settings.register(MOD_ID, "compactMessages", {
     name: "Compact Messages",
@@ -238,7 +143,7 @@ Hooks.once("init", () => {
 
   game.settings.register(MOD_ID, "whisperTarget", {
     name: "Whisper Target",
-    hint: "Determines who receives the changelog whisper messages for PC actors. 'GM + Player' whispers to the GM and the owning player, 'Player only' whispers only to the owning player, 'GM only' whispers only to the GM, and 'Everyone' posts the message publicly.",
+    hint: "Determines who receives the changelog whisper messages for PC actors.",
     scope: "world", config: true, type: String,
     choices: { "gm-player": "GM + Player (default)", "player": "Player only", "gm": "GM only", "everyone": "Everyone" },
     default: "gm-player"
@@ -246,7 +151,7 @@ Hooks.once("init", () => {
 
   game.settings.register(MOD_ID, "npcAudience", {
     name: "NPC Message Audience",
-    hint: "Determines which users receive chat messages for changes to NPC actors. 'GM only' is private, while 'GM + all players' shares all NPC changes publicly.",
+    hint: "Determines which users receive chat messages for changes to NPC actors.",
     scope: "world", config: true, type: String,
     choices: { "gm": "GM only", "gm-players": "GM + all players", "gm-owners": "GM + owners (default)" },
     default: "gm-owners"
@@ -254,13 +159,13 @@ Hooks.once("init", () => {
 
   game.settings.register(MOD_ID, "trackCurrency", {
     name: "Track Currency",
-    hint: "If enabled, the module will monitor and log changes to actor currency (Gold, Silver, Platinum, etc.).",
+    hint: "If enabled, the module will monitor and log changes to actor currency.",
     scope: "world", config: true, type: Boolean, default: true
   });
 
   game.settings.register(MOD_ID, "trackItemChanges", {
     name: "Track Item Changes",
-    hint: "If enabled, the module will monitor and log changes to items, including quantity updates, limited uses, additions, deletions, and renaming.",
+    hint: "If enabled, the module will monitor and log changes to items.",
     scope: "world", config: true, type: Boolean, default: true
   });
 
@@ -282,49 +187,8 @@ Hooks.once("init", () => {
     scope: "world", config: true, type: Boolean, default: false
   });
 
-  // -------------------------------------------------------------------
-  // 2. DnD5e Specific Settings
-  // -------------------------------------------------------------------
-
-  game.settings.register(MOD_ID, "trackDnd5eInspiration", {
-    name: "Track Inspiration (DnD5e)",
-    hint: "If enabled, logs when a DnD5e character gains or uses Heroic Inspiration.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  game.settings.register(MOD_ID, "trackDnd5eDeathSaves", {
-    name: "Track Death Saves (DnD5e PCs)",
-    hint: "If enabled, logs successes and failures for Death Saving Throws on DnD5e characters.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  game.settings.register(MOD_ID, "trackDnd5eSpellPrep", {
-    name: "Track Spell Preparation (DnD5e)",
-    hint: "If enabled, logs when spells are prepared or unprepared on DnD5e characters.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  game.settings.register(MOD_ID, "trackDnd5eSpellSlots", {
-    name: "Track Spell Slots (DnD5e)",
-    hint: "If enabled, logs when DnD5e spell slots are expended or regained.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  game.settings.register(MOD_ID, "trackDnd5eHitDice", {
-    name: "Track Hit Dice (DnD5e)",
-    hint: "If enabled, logs when DnD5e characters expend or regain Hit Dice.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  game.settings.register(MOD_ID, "trackDnd5eXP", {
-    name: "Track Experience Points (DnD5e)",
-    hint: "If enabled, logs when a DnD5e character gains or loses Experience Points.",
-    scope: "world", config: true, type: Boolean, default: true
-  });
-
-  // -------------------------------------------------------------------
-  // 3. Advanced / Manual Path Configuration
-  // -------------------------------------------------------------------
+  // Delegate system specific settings
+  adapter.registerSettings();
 
   game.settings.register(MOD_ID, "autoDetectPaths", {
     name: "Auto-Detect HP Paths",
@@ -334,25 +198,25 @@ Hooks.once("init", () => {
 
   game.settings.register(MOD_ID, "hpPath", {
     name: "HP Value Path",
-    hint: "Manual System Data Path for HP Value (e.g., 'system.attributes.hp.value'). Only used if Auto-Detect HP Paths is disabled or fails.",
+    hint: "Manual System Data Path for HP Value.",
     scope: "world", config: true, type: String, default: ""
   });
 
   game.settings.register(MOD_ID, "tempHpPath", {
     name: "Temp HP Path",
-    hint: "Manual System Data Path for Temporary HP (e.g., 'system.attributes.hp.temp'). Only used if Auto-Detect HP Paths is disabled or fails.",
+    hint: "Manual System Data Path for Temporary HP.",
     scope: "world", config: true, type: String, default: ""
   });
 
   game.settings.register(MOD_ID, "tempHpMaxPath", {
     name: "Temp HP Max Path",
-    hint: "Manual System Data Path for Temporary HP Max (e.g., 'system.attributes.hp.tempmax'). Only used if Auto-Detect HP Paths is disabled or fails.",
+    hint: "Manual System Data Path for Temporary HP Max.",
     scope: "world", config: true, type: String, default: ""
   });
 
   game.settings.register(MOD_ID, "currencyBasePath", {
     name: "Currency Base Path (Adv)",
-    hint: "Manual System Data Path for Currency (e.g., 'system.currency'). Use this to override the default detection if needed.",
+    hint: "Manual System Data Path for Currency. Use this to override the default detection if needed.",
     scope: "world", config: true, type: String, default: ""
   });
 
@@ -370,58 +234,40 @@ Hooks.once("ready", () => {
 
 Hooks.on("preUpdateActor", (actor, update, options, userId) => {
   const { hpPath, tempPath, tempMaxPath } = resolvePaths(actor);
-  const sys = game.system.id;
 
   const willHP = willUpdatePath(update, hpPath);
   const willTHP = willUpdatePath(update, tempPath);
   const willTHPMax = willUpdatePath(update, tempMaxPath);
 
-  const inspPath = (sys === "dnd5e" && getWorldBool("trackDnd5eInspiration")) ? getDnd5eInspirationPath() : null;
-  const willInsp = inspPath ? willUpdatePath(update, inspPath) : false;
-
   let currencyPayload = null;
   if (getWorldBool("trackCurrency", true)) {
-    const { basePath, coins } = detectCurrencyInfo(actor);
-    if (basePath && coins.length && (willUpdatePath(update, basePath) || coins.some(k => willUpdatePath(update, `${basePath}.${k}`)))) {
-      currencyPayload = { basePath, coins };
+    const currencyInfo = adapter.getCurrencyInfo(actor, getWorldPath("currencyBasePath"));
+    if (currencyInfo.isFlatCurrency) {
+      if (currencyInfo.coins.some(p => willUpdatePath(update, p))) {
+        currencyPayload = { ...currencyInfo };
+      }
+    } else if (currencyInfo.basePath && currencyInfo.coins.length) {
+      if (willUpdatePath(update, currencyInfo.basePath) || currencyInfo.coins.some(k => willUpdatePath(update, `${currencyInfo.basePath}.${k}`))) {
+        currencyPayload = { ...currencyInfo };
+      }
     }
   }
 
-  let deathPayload = null;
-  if (sys === "dnd5e" && getWorldBool("trackDnd5eDeathSaves") && actor.type === "character") {
-    const { successPath, failurePath } = getDnd5eDeathPaths();
-    if (willUpdatePath(update, successPath) || willUpdatePath(update, failurePath)) {
-      deathPayload = { oldSucc: readNumber(actor, successPath), oldFail: readNumber(actor, failurePath) };
-    }
-  }
+  // System Specific
+  const context = { getWorldBool, willUpdatePath, readRaw, readNumber };
+  const systemPayload = adapter.buildPreUpdatePayload(actor, update, context);
 
-  let spellSlotsPayload = null;
-  if (sys === "dnd5e" && getWorldBool("trackDnd5eSpellSlots", true)) {
-    const slotPaths = getDnd5eSpellSlotPaths();
-    const changedSlots = slotPaths.filter(s => willUpdatePath(update, s.path) && foundry.utils.hasProperty(actor, s.path));
-    if (changedSlots.length > 0) {
-      spellSlotsPayload = changedSlots.map(s => ({ level: s.level, path: s.path, oldValue: readNumber(actor, s.path) }));
-    }
-  }
+  if (!willHP && !willTHP && !willTHPMax && !currencyPayload && !systemPayload) return;
 
-  const xpPath = "system.details.xp.value";
-  let xpPayload = null;
-  if (sys === "dnd5e" && getWorldBool("trackDnd5eXP", true) && actor.type === "character" && willUpdatePath(update, xpPath)) {
-    xpPayload = { oldXP: readNumber(actor, xpPath) };
-  }
-
-  if (!willHP && !willTHP && !willTHPMax && !willInsp && !currencyPayload && !deathPayload && !spellSlotsPayload && !xpPayload) return;
-
-  // Stash in options for the updateActor hook to pick up
   options[MOD_ID] = {
     oldHP: willHP ? readNumber(actor, hpPath) : undefined,
     oldTHP: willTHP ? readNumber(actor, tempPath) : undefined,
     oldTHPMax: willTHPMax ? readNumber(actor, tempMaxPath) : undefined,
-    oldInspiration: willInsp ? Boolean(readRaw(actor, inspPath)) : undefined,
-    currency: currencyPayload ? { ...currencyPayload, old: Object.fromEntries(currencyPayload.coins.map(k => [k, readNumber(actor, `${currencyPayload.basePath}.${k}`)])) } : undefined,
-    deathSaves: deathPayload,
-    spellSlots: spellSlotsPayload,
-    xp: xpPayload
+    currency: currencyPayload ? { ...currencyPayload, old: currencyPayload.isFlatCurrency
+      ? Object.fromEntries(currencyPayload.coins.map(p => [p, readNumber(actor, p)]))
+      : Object.fromEntries(currencyPayload.coins.map(k => [k, readNumber(actor, `${currencyPayload.basePath}.${k}`)]))
+    } : undefined,
+    system: systemPayload
   };
 });
 
@@ -434,31 +280,25 @@ Hooks.on("updateActor", (actor, update, options, userId) => {
   const payload = options[MOD_ID];
   const uuid = actor.uuid;
 
-  // Retrieve or create pending debounce state
   const pending = ACTOR_DEBOUNCE.get(uuid) ?? {
     oldHP: undefined,
     oldTHP: undefined,
     oldTHPMax: undefined,
-    oldInspiration: undefined,
     currencyOld: {},
-    deathSavesOld: undefined,
-    spellSlotsOld: {},
-    oldXP: undefined,
+    system: {},
     timer: null
   };
 
-  // Clear existing timer (resetting the clock)
   if (pending.timer) clearTimeout(pending.timer);
 
-  // MERGE LOGIC: Keep the *original* old value if we already have one.
   if (pending.oldHP === undefined) pending.oldHP = payload.oldHP;
   if (pending.oldTHP === undefined) pending.oldTHP = payload.oldTHP;
   if (pending.oldTHPMax === undefined) pending.oldTHPMax = payload.oldTHPMax;
-  if (pending.oldInspiration === undefined) pending.oldInspiration = payload.oldInspiration;
 
   if (payload.currency) {
     pending.currencyBase = payload.currency.basePath;
     pending.currencyCoins = payload.currency.coins;
+    pending.isFlatCurrency = payload.currency.isFlatCurrency ?? false;
     for (const k of payload.currency.coins) {
       if (pending.currencyOld[k] === undefined && payload.currency.old[k] !== undefined) {
         pending.currencyOld[k] = payload.currency.old[k];
@@ -466,23 +306,18 @@ Hooks.on("updateActor", (actor, update, options, userId) => {
     }
   }
 
-  if (payload.deathSaves && pending.deathSavesOld === undefined) {
-    pending.deathSavesOld = payload.deathSaves;
-  }
-
-  if (payload.spellSlots) {
-    for (const slot of payload.spellSlots) {
-      if (pending.spellSlotsOld[slot.level] === undefined) {
-        pending.spellSlotsOld[slot.level] = { level: slot.level, path: slot.path, oldValue: slot.oldValue };
+  if (payload.system) {
+    // Merge system payload. It can be deep, so merge objects loosely.
+    for (const [k, v] of Object.entries(payload.system)) {
+      if (pending.system[k] === undefined) {
+        pending.system[k] = v;
+      } else if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+        // Simple shallow merge for nested objects like deathSaves
+        pending.system[k] = { ...v, ...pending.system[k] };
       }
     }
   }
 
-  if (payload.xp && pending.oldXP === undefined) {
-    pending.oldXP = payload.xp.oldXP;
-  }
-
-  // Set new timer
   pending.timer = setTimeout(() => {
     processActorUpdate(actor, pending);
     ACTOR_DEBOUNCE.delete(uuid);
@@ -553,18 +388,29 @@ async function processActorUpdate(actor, data) {
     }
   }
 
-  // Inspiration
-  if (data.oldInspiration !== undefined && game.system.id === "dnd5e") {
-    const newInsp = Boolean(readRaw(actor, getDnd5eInspirationPath()));
-    if (newInsp !== data.oldInspiration) {
-      const icon = `<i class="fa-solid fa-dice-d20"></i>`;
-      const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${newInsp ? "gained" : "spent"} Heroic Inspiration</span>`;
-      await postMonitorMessage(actor, line, "tiny-monitor-inspiration", "inspiration");
-    }
-  }
-
   // Currency
-  if (data.currencyBase) {
+  if (data.isFlatCurrency && data.currencyCoins) {
+    for (const coinPath of data.currencyCoins) {
+      const oldVal = data.currencyOld[coinPath] ?? 0;
+      const newVal = readNumber(actor, coinPath);
+      const delta = newVal - oldVal;
+      if (delta !== 0) {
+        const icon = `<i class="fa-solid fa-coins"></i>`;
+        const sign = delta > 0 ? "+" : "-";
+        const abs = Math.abs(delta);
+        const name = adapter.getCoinLabel(coinPath);
+        const isSimple = getWorldBool("simpleOutput");
+
+        const text = isSimple
+          ? `${name}: ${sign} ${abs}`
+          : `${name}: ${oldVal} ${sign} ${abs} → ${newVal}`;
+
+        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
+        const cls = delta > 0 ? "tiny-monitor-currency-gain" : "tiny-monitor-currency-loss";
+        await postMonitorMessage(actor, line, cls, "currency");
+      }
+    }
+  } else if (data.currencyBase) {
     for (const k of data.currencyCoins) {
       const oldVal = data.currencyOld[k] ?? 0;
       const newVal = readNumber(actor, `${data.currencyBase}.${k}`);
@@ -573,7 +419,7 @@ async function processActorUpdate(actor, data) {
         const icon = `<i class="fa-solid fa-coins"></i>`;
         const sign = delta > 0 ? "+" : "-";
         const abs = Math.abs(delta);
-        const name = coinLabel(k, game.system.id);
+        const name = adapter.getCoinLabel(k);
         const isSimple = getWorldBool("simpleOutput");
 
         const text = isSimple
@@ -587,91 +433,10 @@ async function processActorUpdate(actor, data) {
     }
   }
 
-  // Death Saves
-  if (data.deathSavesOld) {
-    const { successPath, failurePath } = getDnd5eDeathPaths();
-    const newSucc = readNumber(actor, successPath);
-    const newFail = readNumber(actor, failurePath);
-    const oldSucc = Number(data.deathSavesOld.oldSucc ?? 0);
-    const oldFail = Number(data.deathSavesOld.oldFail ?? 0);
-
-    // Track successes separately
-    if (newSucc !== oldSucc) {
-      const delta = newSucc - oldSucc;
-      const icon = `<i class="fa-solid fa-heart-pulse"></i>`;
-
-      if (delta > 0) {
-        // Gained success(es)
-        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">gained ${delta} Death Save ${delta === 1 ? 'Success' : 'Successes'} (${newSucc}/3)</span>`;
-        await postMonitorMessage(actor, line, "tiny-monitor-gain", "deathsave");
-      } else {
-        // Lost success(es) or reset
-        const absDelta = Math.abs(delta);
-        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">lost ${absDelta} Death Save ${absDelta === 1 ? 'Success' : 'Successes'} (${newSucc}/3)</span>`;
-        await postMonitorMessage(actor, line, "tiny-monitor-loss", "deathsave");
-      }
-    }
-
-    // Track failures separately
-    if (newFail !== oldFail) {
-      const delta = newFail - oldFail;
-      const icon = `<i class="fa-solid fa-skull"></i>`;
-
-      if (delta > 0) {
-        // Gained failure(s)
-        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">gained ${delta} Death Save ${delta === 1 ? 'Failure' : 'Failures'} (${newFail}/3)</span>`;
-        await postMonitorMessage(actor, line, "tiny-monitor-loss", "deathsave");
-      } else {
-        // Lost failure(s) or reset (good thing!)
-        const absDelta = Math.abs(delta);
-        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">lost ${absDelta} Death Save ${absDelta === 1 ? 'Failure' : 'Failures'} (${newFail}/3)</span>`;
-        await postMonitorMessage(actor, line, "tiny-monitor-gain", "deathsave");
-      }
-    }
-  }
-
-  // Spell Slots
-  if (data.spellSlotsOld && Object.keys(data.spellSlotsOld).length > 0) {
-    // Sort by level for consistent display
-    const sortedLevels = Object.keys(data.spellSlotsOld).sort((a, b) => Number(a) - Number(b));
-
-    for (const level of sortedLevels) {
-      const slotData = data.spellSlotsOld[level];
-      const newVal = readNumber(actor, slotData.path);
-      const oldVal = slotData.oldValue;
-      const delta = newVal - oldVal;
-
-      if (delta !== 0) {
-        const icon = `<i class="fa-solid fa-hat-wizard"></i>`;
-        const action = delta < 0 ? "expended" : "regained";
-        const cls = delta < 0 ? "tiny-monitor-spellslot-expend" : "tiny-monitor-spellslot-regain";
-        const absDelta = Math.abs(delta);
-        const slotWord = absDelta === 1 ? "slot" : "slots";
-        const quantityStr = absDelta > 1 ? `${absDelta} ` : "";
-        const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${action} ${quantityStr}level ${level} ${slotWord}</span>`;
-        await postMonitorMessage(actor, line, cls, "spellslot");
-      }
-    }
-  }
-
-  // Experience Points
-  if (data.oldXP !== undefined && game.system.id === "dnd5e") {
-    const newXP = readNumber(actor, "system.details.xp.value");
-    const delta = newXP - data.oldXP;
-    if (delta !== 0) {
-      const icon = `<i class="fa-solid fa-star"></i>`;
-      const sign = delta > 0 ? "+" : "-";
-      const abs = Math.abs(delta);
-      const isSimple = getWorldBool("simpleOutput");
-      const cls = delta > 0 ? "tiny-monitor-xp-gain" : "tiny-monitor-xp-loss";
-
-      const text = isSimple
-        ? `XP: ${sign} ${abs.toLocaleString()}`
-        : `XP: ${data.oldXP.toLocaleString()} ${sign} ${abs.toLocaleString()} → ${newXP.toLocaleString()}`;
-
-      const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
-      await postMonitorMessage(actor, line, cls, "xp");
-    }
+  // System Specific Processing
+  if (Object.keys(data.system).length > 0) {
+    const context = { link, postMonitorMessage, readRaw, readNumber, getWorldBool };
+    await adapter.processActorUpdate(actor, data.system, context);
   }
 }
 
@@ -694,7 +459,6 @@ Hooks.on("createItem", async (item, options, userId) => {
   if (qty === 1 || isSimple) {
     line = `${icon} ${link} added ${safeItemName}${qty > 1 ? ` (+${qty})` : ""}`;
   } else {
-    // Verbose existing behavior for initial quantity > 1
     line = `${icon} ${link} (${safeItemName}): 0 + ${qty} → ${qty}`;
   }
 
@@ -707,29 +471,21 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
   const willQty = trackItems && willUpdatePath(change, "system.quantity");
   const willName = trackItems && willUpdatePath(change, "name");
   const willUses = trackItems && willUpdatePath(change, "system.uses.spent") && readNumber(item, "system.uses.max") > 0;
-  
-  const willPrep = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eSpellPrep") && item.type === "spell") && 
-    (willUpdatePath(change, "system.prepared") || willUpdatePath(change, "system.preparation.prepared") || willUpdatePath(change, "system.method") || willUpdatePath(change, "system.preparation.mode"));
-
-  const willHD = (game.system.id === "dnd5e" && getWorldBool("trackDnd5eHitDice", true) && item.type === "class") &&
-    (willUpdatePath(change, "system.hitDiceUsed") || willUpdatePath(change, "system.hd.spent"));
-
   const willEquip = getWorldBool("trackEquipUnequip") && willUpdatePath(change, "system.equipped");
 
-  if (willQty || willName || willUses || willPrep || willHD || willEquip) {
-    let oldHDVal;
-    if (willHD) {
-      oldHDVal = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
-      oldHDVal = Number.isFinite(Number(oldHDVal)) ? Number(oldHDVal) : 0;
-    }
+  const context = { getWorldBool, willUpdatePath, readRaw, readNumber };
+  let systemStash = null;
+  if (adapter && adapter.buildPreUpdateItemPayload) {
+    systemStash = adapter.buildPreUpdateItemPayload(item, change, context);
+  }
 
+  if (willQty || willName || willUses || willEquip || systemStash) {
     ITEM_UPDATE_STASH.set(item, {
       oldQty: willQty ? (readNumber(item, "system.quantity") || 0) : undefined,
       oldName: willName ? String(item.name ?? "") : undefined,
       oldUses: willUses ? readNumber(item, "system.uses.max") - readNumber(item, "system.uses.spent") : undefined,
-      oldPrep: willPrep ? dnd5eIsSpellPreparedLike(item) : undefined,
-      oldHD: oldHDVal,
-      oldEquip: willEquip ? Boolean(readRaw(item, "system.equipped")) : undefined
+      oldEquip: willEquip ? Boolean(readRaw(item, "system.equipped")) : undefined,
+      system: systemStash
     });
   }
 });
@@ -737,25 +493,42 @@ Hooks.on("preUpdateItem", (item, change, options, userId) => {
 Hooks.on("updateItem", (item, change, options, userId) => {
   if (userId !== game.userId || !(item.parent instanceof Actor)) return;
 
-  // Debounce Quantity/Name/Prep/Equip changes
   const stash = ITEM_UPDATE_STASH.get(item);
   ITEM_UPDATE_STASH.delete(item);
 
-  if (stash) {
+  if (stash || adapter) {
     const uuid = item.uuid;
-    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldUses: undefined, oldPrep: undefined, oldHD: undefined, oldEquip: undefined, timer: null };
+    const pending = ITEM_DEBOUNCE.get(uuid) ?? { oldQty: undefined, oldName: undefined, oldUses: undefined, oldEquip: undefined, system: {}, timer: null };
 
     if (pending.timer) clearTimeout(pending.timer);
 
-    if (pending.oldQty === undefined && stash.oldQty !== undefined) pending.oldQty = stash.oldQty;
-    if (pending.oldName === undefined && stash.oldName !== undefined) pending.oldName = stash.oldName;
-    if (pending.oldUses === undefined && stash.oldUses !== undefined) pending.oldUses = stash.oldUses;
-    if (pending.oldPrep === undefined && stash.oldPrep !== undefined) pending.oldPrep = stash.oldPrep;
-    if (pending.oldHD === undefined && stash.oldHD !== undefined) pending.oldHD = stash.oldHD;
-    if (pending.oldEquip === undefined && stash.oldEquip !== undefined) pending.oldEquip = stash.oldEquip;
+    if (stash) {
+      if (pending.oldQty === undefined && stash.oldQty !== undefined) pending.oldQty = stash.oldQty;
+      if (pending.oldName === undefined && stash.oldName !== undefined) pending.oldName = stash.oldName;
+      if (pending.oldUses === undefined && stash.oldUses !== undefined) pending.oldUses = stash.oldUses;
+      if (pending.oldEquip === undefined && stash.oldEquip !== undefined) pending.oldEquip = stash.oldEquip;
+      
+      if (stash.system) {
+        for (const [k, v] of Object.entries(stash.system)) {
+          if (pending.system[k] === undefined) {
+            pending.system[k] = v;
+          } else if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+            pending.system[k] = { ...v, ...pending.system[k] };
+          }
+        }
+      }
+    }
 
-    pending.timer = setTimeout(() => {
-      processItemUpdate(item, pending);
+    pending.timer = setTimeout(async () => {
+      let handled = false;
+      if (adapter) {
+         const context = { getWorldBool, postMonitorMessage, readRaw, getActorLink, escapeHTML, oldItemData: pending };
+         handled = await adapter.processItemChange(item, "update", context);
+      }
+      
+      if (!handled) {
+         await processItemUpdate(item, pending);
+      }
       ITEM_DEBOUNCE.delete(uuid);
     }, DEBOUNCE_MS);
 
@@ -783,15 +556,12 @@ async function processItemUpdate(item, data) {
       const isSimple = getWorldBool("simpleOutput");
 
       if (oldQty === 0 && newQty === 1) {
-        // Treated as pure addition
         await postMonitorMessage(item.parent, `${icon} ${link} added ${safeItemName}`, "tiny-monitor-item-inc", "item", true);
       }
       else if (oldQty === 1 && newQty === 0) {
-        // Treated as pure deletion
         await postMonitorMessage(item.parent, `${icon} ${link} deleted ${safeItemName}`, "tiny-monitor-item-dec", "item", true);
       }
       else {
-        // Quantity adjustment
         const text = isSimple
           ? `${sign} ${abs}`
           : `${oldQty} ${sign} ${abs} → ${newQty}`;
@@ -827,47 +597,6 @@ async function processItemUpdate(item, data) {
   if (data.oldName !== undefined && item.name !== data.oldName) {
     const line = `${icon} ${link} ${data.oldName} → ${item.name}`;
     await postMonitorMessage(item.parent, line, "tiny-monitor-item", "item", true);
-  }
-
-  // Spell Prep
-  if (data.oldPrep !== undefined) {
-    const newPrep = dnd5eIsSpellPreparedLike(item);
-    if (newPrep !== data.oldPrep) {
-      const level = readNumber(item, "system.level");
-      const prepIcon = `<i class="fa-solid fa-book"></i>`;
-      const line = `${prepIcon} ${link} ${newPrep ? "prepared" : "unprepared"}: ${item.name}${Number.isFinite(level) ? ` (Lv ${level})` : ""}`;
-      await postMonitorMessage(item.parent, line, "tiny-monitor-spellprep", "spellprep", true);
-    }
-  }
-
-  // Hit Dice
-  if (data.oldHD !== undefined) {
-    let newHD = readRaw(item, "system.hd.spent") ?? readRaw(item, "system.hitDiceUsed");
-    newHD = Number.isFinite(Number(newHD)) ? Number(newHD) : 0;
-    
-    const delta = newHD - data.oldHD;
-    if (delta !== 0) {
-      const hdIcon = `<i class="fa-solid fa-bed"></i>`;
-      const dieType = String(readRaw(item, "system.hd.denomination") || readRaw(item, "system.hitDice") || "HD");
-      const cls = delta > 0 ? "tiny-monitor-hitdice-expend" : "tiny-monitor-hitdice-regain";
-      
-      const maxHD = readNumber(item, "system.levels") || 0;
-      const oldRem = maxHD - data.oldHD;
-      const newRem = maxHD - newHD;
-      
-      const remDelta = newRem - oldRem;
-      const remSign = remDelta > 0 ? "+" : "-";
-      const remAbs = Math.abs(remDelta);
-      
-      const isSimple = getWorldBool("simpleOutput");
-      
-      const text = isSimple
-        ? `${dieType} hd: ${remSign}${remAbs}`
-        : `${dieType} Hit Dice: ${oldRem} ${remSign} ${remAbs} → ${newRem}`;
-      
-      const line = `${hdIcon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
-      await postMonitorMessage(item.parent, line, cls, "hitdice", true);
-    }
   }
 
   // Equip / Unequip
@@ -910,7 +639,6 @@ Hooks.on("deleteItem", async (item, options, userId) => {
   const { hasQty, qty, link, whisper, name } = payload;
   const oldQty = Number(qty ?? 0);
 
-  // Suppress deletion message if item tracks quantity but was already 0
   if (hasQty && oldQty === 0) return;
 
   const treatAsSingleton = !hasQty || oldQty <= 1;
@@ -932,17 +660,10 @@ Hooks.on("deleteItem", async (item, options, userId) => {
 // Active Effect Tracking
 // -------------------------------
 
-/**
- * Resolve the owning Actor from an ActiveEffect, handling effects on Items (e.g., DnD5e transferred effects).
- */
 function resolveEffectActor(effect) {
-  // Direct: effect embedded on an Actor
   if (effect.parent instanceof Actor) return effect.parent;
-  // Effect on an Item embedded on an Actor
   if (effect.parent?.parent instanceof Actor) return effect.parent.parent;
-  // DnD5e: Item5e may expose .actor
   if (effect.parent?.actor instanceof Actor) return effect.parent.actor;
-  // Fallback: search actors for the item that owns this effect
   if (effect.parent) {
     const itemId = effect.parent.id ?? effect.parent._id;
     if (itemId) {
@@ -1035,14 +756,10 @@ Hooks.on("renderChatMessageHTML", applyMonitorStyling);  // V14+
 // -------------------------------
 
 Hooks.on("deleteChatMessage", async (message, options, userId) => {
-  // Only the active GM processes this. This prevents the triggering player
-  // from seeing the newly generated whisper, and prevents duplicate messages.
-  // V14 renames activeGM → primaryGM; fall back for V13 compat
   const primaryGM = game.users.primaryGM ?? game.users.activeGM;
   if (!game.user.isGM || primaryGM?.id !== game.user.id) return;
 
   const deletingUser = game.users.get(userId);
-  // Don't report if a GM deleted a message
   if (!deletingUser || deletingUser.isGM) return;
 
   if (!getWorldBool("trackDeletedMessages", true)) return;
@@ -1051,28 +768,18 @@ Hooks.on("deleteChatMessage", async (message, options, userId) => {
   if (gmUsers.length === 0) return;
 
   const userName = escapeHTML(deletingUser.name || "Unknown Player");
-
-  // Clone the message data to preserve all rolls, flags, embeds, and styling perfectly
   const messageData = message.toObject();
   
-  // Wipe ID so it creates a new message
   delete messageData._id;
 
-  // Change the author of the message to the GM. If we don't do this,
-  // Foundry's permission system ensures the author ALWAYS sees their own chat messages.
-  // V13 uses 'user', V14 uses 'author' — set both for cross-version compat
   messageData.author = game.user.id;
   messageData.user = game.user.id;
-  
-  // Update targets to GM only
   messageData.whisper = gmUsers;
   
-  // Assign a special flag so our styling can still catch it if needed
   foundry.utils.setProperty(messageData, `flags.${MOD_ID}.isMonitorMsg`, true);
   foundry.utils.setProperty(messageData, `flags.${MOD_ID}.kind`, "chat-delete");
   foundry.utils.setProperty(messageData, `flags.${MOD_ID}.cls`, "tiny-monitor-item-dec");
 
-  // Prepend the notice into the flavor or content
   const prefix = `<div style="color: var(--color-text-dark-primary); margin-bottom: 0.5rem; font-size: 1.1em;"><strong>${userName} deleted:</strong></div>`;
   if (messageData.flavor) {
     messageData.flavor = prefix + messageData.flavor;
