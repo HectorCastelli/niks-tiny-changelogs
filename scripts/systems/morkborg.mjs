@@ -26,7 +26,7 @@ export default class MorkBorgAdapter extends BaseSystemAdapter {
 
   getCurrencyInfo(actor, manualBase) {
     if (manualBase) return super.getCurrencyInfo(actor, manualBase);
-    
+
     // Mörk Borg: silver is a flat number at system.silver, not inside a currency sub-object
     const silverPath = "system.silver";
     const v = foundry.utils.getProperty(actor, silverPath);
@@ -89,8 +89,8 @@ export default class MorkBorgAdapter extends BaseSystemAdapter {
     }
 
     // Powers (Spell Slots)
-    if (payload.spellSlotsOld && Object.keys(payload.spellSlotsOld).length > 0) {
-      const slotData = payload.spellSlotsOld[0];
+    if (payload.spellSlots && payload.spellSlots.length > 0) {
+      const slotData = payload.spellSlots[0];
       if (slotData) {
         const newVal = readNumber(actor, slotData.path);
         const oldVal = slotData.oldValue;
