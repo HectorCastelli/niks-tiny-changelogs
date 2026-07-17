@@ -2,6 +2,12 @@ import BaseSystemAdapter from "./base.mjs";
 
 export default class MorkBorgAdapter extends BaseSystemAdapter {
   registerSettings() {
+    game.settings.register(this.MOD_ID, "trackMorkBorgAbilities", {
+      name: "Track Abilities",
+      hint: "If enabled, logs when a character increases or decreases Abilities scores.",
+      scope: "world", config: true, type: Boolean, default: false
+    });
+
     game.settings.register(this.MOD_ID, "trackMorkBorgOmens", {
       name: "Track Omens",
       hint: "If enabled, logs when a character gains or uses Omens.",
@@ -43,6 +49,20 @@ export default class MorkBorgAdapter extends BaseSystemAdapter {
   buildPreUpdatePayload(actor, update, context) {
     const payload = {};
 
+    // Abilities
+    if (context.getWorldBool("trackMorkBorgAbilities", true)) {
+      const abilitiesPath = "system.abilities";
+      if (context.willUpdatePath(update, abilitiesPath)) {
+        payload.oldAbilities = [];
+        const currentAbilities = context.readRaw(actor, abilitiesPath);
+        for (const [abilityKey, abilityData] of Object.entries(currentAbilities)) {
+          const abilityPath = `${abilitiesPath}.${abilityKey}`;
+          payload.oldAbilities.push({ key: abilityKey, value: context.readNumber(actor, `${abilityPath}.value`) });
+        }
+        if (payload.oldAbilities.length === 0) payload.oldAbilities = null;
+      }
+    }
+
     // Omens
     if (context.getWorldBool("trackMorkBorgOmens", true)) {
       const omensPath = "system.omens.value";
@@ -66,6 +86,33 @@ export default class MorkBorgAdapter extends BaseSystemAdapter {
 
   async processActorUpdate(actor, payload, context) {
     const { link, postMonitorMessage, readNumber, getWorldBool } = context;
+
+    // Abilities
+    if (payload.oldAbilities && payload.oldAbilities.length > 0) {
+      const abilitiesPath = "system.abilities";
+      const abilityValuePath = "value";
+
+      for (const { key, value } of payload.oldAbilities) {
+        const newAbilityValue = readNumber(actor, `${abilitiesPath}.${key}.${abilityValuePath}`);
+        const oldAbilityValue = value;
+        const delta = newAbilityValue - oldAbilityValue;
+
+        if (delta !== 0) {
+          const icon = `<i class="fa-solid fa-dice-d20"></i>`;
+          const sign = delta > 0 ? "+" : "-";
+          const absDelta = Math.abs(delta);
+          const isSimple = getWorldBool("simpleOutput");
+          const cls = delta > 0 ? "tiny-monitor-ability-gain" : "tiny-monitor-ability-loss";
+
+          const text = isSimple
+            ? `${key.toUpperCase().slice(0, 3)}: ${sign} ${absDelta}`
+            : `${key.toUpperCase()}: ${oldAbilityValue} ${sign} ${absDelta} → ${newAbilityValue}`;
+
+          const line = `${icon} <span class="tm-actor">${link}</span> <span class="tm-text">${text}</span>`;
+          await postMonitorMessage(actor, line, cls, "ability");
+        }
+      }
+    }
 
     // Omens
     if (payload.hasInspiration && payload.oldInspiration !== undefined) {
